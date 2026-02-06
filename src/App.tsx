@@ -1,4 +1,4 @@
-import MapGlobe from "./component/MapGlobe";
+// import MapGlobe from "./component/MapGlobe";
 import MapGlobeShp from "./component/MapGlobeShp";
 
 function App() {
