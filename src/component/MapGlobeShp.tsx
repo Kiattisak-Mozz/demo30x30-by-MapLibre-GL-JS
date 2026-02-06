@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
@@ -242,6 +243,9 @@ const MapGlobeShp = () => {
         new maplibregl.Popup().setLngLat(e.lngLat).setHTML(html).addTo(map);
       });
 
+      map.on("zoom", () => {
+        if (map.getZoom() > 17) map.setZoom(17);
+      });
       map.on(
         "mouseenter",
         "shp-layer-fill",
