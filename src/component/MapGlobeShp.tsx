@@ -15,11 +15,45 @@ interface LocationGroup {
 const MapGlobeShp = () => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const markerRef = useRef<maplibregl.Marker | null>(null);
+  const searchMarkerRef = useRef<maplibregl.Marker | null>(null); // สำหรับจุดที่ค้นหา
+  const areaMarkersRef = useRef<maplibregl.Marker[]>([]); // สำหรับหมุดในพื้นที่ Shp
 
   const [locationGroups, setLocationGroups] = useState<LocationGroup[]>([]);
 
-  // ===== Utils: Zoom to Feature =====
+  // ===== ฟังก์ชันล้างหมุดทั้งหมด =====
+  const clearAreaMarkers = () => {
+    areaMarkersRef.current.forEach((m) => m.remove());
+    areaMarkersRef.current = [];
+  };
+
+  // ===== ฟังก์ชันหาจุดกึ่งกลาง (Centroid) แบบง่าย =====
+  const getCentroid = (geometry: any) => {
+    let coords = geometry.coordinates;
+    // ถ้าเป็น MultiPolygon หรือ Polygon ซ้อนกัน ให้ดึงชั้นในสุด
+    while (Array.isArray(coords[0][0])) coords = coords[0];
+
+    let lng = 0,
+      lat = 0;
+    coords.forEach((c: any) => {
+      lng += c[0];
+      lat += c[1];
+    });
+    return [lng / coords.length, lat / coords.length];
+  };
+
+  const handleResetToGlobe = () => {
+    if (mapRef.current) {
+      mapRef.current.flyTo({
+        center: [100.5, 13.7],
+        zoom: 1.5,
+        pitch: 0,
+        bearing: 0,
+        essential: true,
+        duration: 2000,
+      });
+    }
+  };
+
   const zoomToFeature = (geometry: any) => {
     if (!mapRef.current) return;
     const bounds = new maplibregl.LngLatBounds();
@@ -34,7 +68,7 @@ const MapGlobeShp = () => {
     });
   };
 
-  // ===== Upload & Grouping Logic =====
+  // ===== Upload & Grouping & Auto Marker =====
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !mapRef.current) return;
@@ -43,28 +77,48 @@ const MapGlobeShp = () => {
       const buffer = await file.arrayBuffer();
       const result: any = await shp(buffer);
       const map = mapRef.current;
+
+      clearAreaMarkers(); // ล้างหมุดเก่าก่อน
+
       const allFeatures: any[] = [];
       const groups: LocationGroup[] = [];
       const geojsonArray = Array.isArray(result) ? result : [result];
 
       geojsonArray.forEach((collection: any) => {
         const groupName = collection.fileName || "General Areas";
-        const groupFeatures = collection.features.map((f: any, i: number) => ({
-          id: `${groupName}-${i}`,
-          name:
-            f.properties?.name ||
-            f.properties?.NAMETH ||
-            f.properties?.Name ||
-            `Area ${i + 1}`,
-          geometry: f.geometry,
-          properties: f.properties, // เก็บ properties ไว้ใช้ตอนคลิก
-        }));
+        const groupFeatures = collection.features.map((f: any, i: number) => {
+          const centroid = getCentroid(f.geometry);
+
+          // สร้าง Marker สำหรับแต่ละ Area
+          const marker = new maplibregl.Marker({ color: "#FFD700", scale: 0.6 })
+            .setLngLat(centroid as [number, number])
+            .setPopup(
+              new maplibregl.Popup().setHTML(
+                `<b>${f.properties?.name || f.properties?.NAMETH || "Area"}</b>`,
+              ),
+            )
+            .addTo(map);
+
+          areaMarkersRef.current.push(marker);
+
+          return {
+            id: `${groupName}-${i}`,
+            name:
+              f.properties?.name ||
+              f.properties?.NAMETH ||
+              f.properties?.Name ||
+              `Area ${i + 1}`,
+            geometry: f.geometry,
+            properties: f.properties,
+          };
+        });
         groups.push({ folderName: groupName, features: groupFeatures });
         allFeatures.push(...collection.features);
       });
 
       setLocationGroups(groups);
 
+      // จัดการ Layer
       if (map.getSource("uploaded-shp")) {
         (map.getSource("uploaded-shp") as maplibregl.GeoJSONSource).setData({
           type: "FeatureCollection",
@@ -79,13 +133,13 @@ const MapGlobeShp = () => {
           id: "shp-layer-fill",
           type: "fill",
           source: "uploaded-shp",
-          paint: { "fill-color": "#00ffff", "fill-opacity": 0.4 },
+          paint: { "fill-color": "#00ffff", "fill-opacity": 0.3 },
         });
         map.addLayer({
           id: "shp-layer-line",
           type: "line",
           source: "uploaded-shp",
-          paint: { "line-color": "#ffffff", "line-width": 2 },
+          paint: { "line-color": "#ffffff", "line-width": 1.5 },
         });
       }
 
@@ -101,7 +155,6 @@ const MapGlobeShp = () => {
     }
   };
 
-  // ===== Init Map & Interaction =====
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
@@ -111,105 +164,94 @@ const MapGlobeShp = () => {
       maxZoom: 18,
       style: {
         version: 8,
+        // sources: {
+        //   satellite: {
+        //     type: "raster",
+        //     tiles: [
+        //       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        //     ],
+        //     tileSize: 256,
+        //   },
+        // },
+        // layers: [{ id: "satellite", type: "raster", source: "satellite" }],
         sources: {
-          satellite: {
+          google: {
             type: "raster",
-            tiles: [
-              "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            ],
+            tiles: ["https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"],
             tileSize: 256,
           },
         },
-        layers: [{ id: "satellite", type: "raster", source: "satellite" }],
+        layers: [{ id: "google-layer", type: "raster", source: "google" }],
       },
       center: [100.5, 13.7],
       zoom: 1.5,
     });
 
-    const geocoderApi: any = {
-      forwardGeocode: async (config: any) => {
-        const features = [];
-        try {
-          const request = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(config.query)}&format=geojson&addressdetails=1&limit=5`;
-          const response = await fetch(request);
-          const geojson = await response.json();
-          for (const feature of geojson.features) {
-            features.push({
-              type: "Feature",
-              geometry: feature.geometry,
-              place_name: feature.properties.display_name,
-              properties: feature.properties,
-              text: feature.properties.display_name,
-              place_type: ["place"],
-              center: feature.geometry.coordinates,
-            });
-          }
-        } catch (e) {
-          console.error(e);
-        }
-        return { features };
-      },
-    };
+    map.addControl(new maplibregl.NavigationControl(), "bottom-right");
 
     map.on("load", () => {
       map.setProjection({ type: "globe" });
 
-      map.on("zoom", () => {
-        if (map.getZoom() > 17) map.setZoom(17);
-      });
+      const geocoderApi: any = {
+        forwardGeocode: async (config: any) => {
+          const features = [];
+          try {
+            const request = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(config.query)}&format=geojson&limit=5`;
+            const response = await fetch(request);
+            const geojson = await response.json();
+            for (const feature of geojson.features) {
+              features.push({
+                type: "Feature",
+                geometry: feature.geometry,
+                place_name: feature.properties.display_name,
+                center: feature.geometry.coordinates,
+                text: feature.properties.display_name,
+                place_type: ["place"],
+              });
+            }
+          } catch (e) {
+            console.error(e);
+          }
+          return { features };
+        },
+      };
 
       const geocoder = new MaplibreGeocoder(geocoderApi, {
-        maplibregl: maplibregl,
+        maplibregl,
         marker: false,
-        showResultsWhileTyping: true,
         zoom: 17,
-        placeholder: "ค้นหาสถานที่...",
+        placeholder: "ค้นหา...",
       });
       map.addControl(geocoder as any, "top-left");
 
       geocoder.on("result", (e: any) => {
         const [lng, lat] = e.result.center;
-        if (markerRef.current) markerRef.current.remove();
-        markerRef.current = new maplibregl.Marker({ color: "#00ffff" })
+        if (searchMarkerRef.current) searchMarkerRef.current.remove();
+        searchMarkerRef.current = new maplibregl.Marker({ color: "#00ffff" })
           .setLngLat([lng, lat])
           .addTo(map);
       });
 
-      // ==========================================
-      // ส่วนที่เพิ่มใหม่: คลิกที่พื้นที่เพื่อดูข้อมูล
-      // ==========================================
       map.on("click", "shp-layer-fill", (e) => {
         if (!e.features || e.features.length === 0) return;
-
-        const feature = e.features[0];
-        const props = feature.properties;
-
-        // สร้างตารางข้อมูลจาก Properties ทั้งหมด
-        let htmlContent = `<div style="padding:10px; font-family: sans-serif; min-width:150px;">
-                            <h3 style="margin:0 0 10px 0; font-size:14px; color:#007bff; border-bottom:1px solid #ddd;">ข้อมูลพื้นที่</h3>
-                            <table style="width:100%; font-size:12px; border-collapse: collapse;">`;
-
-        for (const key in props) {
-          htmlContent += `<tr>
-                            <td style="font-weight:bold; padding:4px 0; border-bottom:1px solid #eee;">${key}</td>
-                            <td style="padding:4px 0 4px 10px; border-bottom:1px solid #eee; color:#555;">${props[key]}</td>
-                          </tr>`;
-        }
-        htmlContent += `</table></div>`;
-
-        new maplibregl.Popup({ closeButton: true, className: "custom-popup" })
-          .setLngLat(e.lngLat)
-          .setHTML(htmlContent)
-          .addTo(map);
+        const props = e.features[0].properties;
+        let html = `<div style="padding:10px; font-size:11px;"><b>Info</b><hr/>`;
+        for (const key in props)
+          html += `<div><b>${key}:</b> ${props[key]}</div>`;
+        html += `</div>`;
+        new maplibregl.Popup().setLngLat(e.lngLat).setHTML(html).addTo(map);
       });
 
-      // เปลี่ยน Cursor เมื่อเอาเมาส์ไปวางบนพื้นที่
-      map.on("mouseenter", "shp-layer-fill", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", "shp-layer-fill", () => {
-        map.getCanvas().style.cursor = "";
-      });
+      map.on(
+        "mouseenter",
+        "shp-layer-fill",
+        () => (map.getCanvas().style.cursor = "pointer"),
+      );
+      map.on(
+        "mouseleave",
+        "shp-layer-fill",
+        () => (map.getCanvas().style.cursor = ""),
+      );
     });
 
     mapRef.current = map;
@@ -227,10 +269,19 @@ const MapGlobeShp = () => {
     >
       <style>{`
         .maplibregl-ctrl-geocoder { min-width: 300px; z-index: 20; }
-        .maplibregl-ctrl-geocoder--suggestions { background: white; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); color: black; }
-        .maplibregl-popup-content { border-radius: 12px; padding: 0; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+        .maplibregl-ctrl-geocoder--suggestions { background: white; border-radius: 8px; color: black; }
       `}</style>
 
+      {/* Reset Globe Button */}
+      <div
+        onClick={handleResetToGlobe}
+        style={resetGlobeButtonStyle}
+        title="Back to Globe View"
+      >
+        <div style={{ margin: 2 }}>🌎</div>
+      </div>
+
+      {/* Upload Panel */}
       <div style={panelStyle}>
         <strong style={{ fontSize: 13 }}>🛰️ Upload SHP (.zip)</strong>
         <input
@@ -241,12 +292,13 @@ const MapGlobeShp = () => {
         />
       </div>
 
+      {/* List Panel */}
       {locationGroups.length > 0 && (
         <div style={listContainerStyle}>
           <h4 style={{ margin: "0 0 12px", color: "#00ffff", fontSize: 14 }}>
             📂 รายชื่อตามกลุ่ม
           </h4>
-          <div style={{ maxHeight: "65vh", overflowY: "auto" }}>
+          <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
             {locationGroups.map((group) => (
               <div key={group.folderName} style={{ marginBottom: 10 }}>
                 <div style={groupHeaderStyle}>📁 {group.folderName}</div>
@@ -263,7 +315,10 @@ const MapGlobeShp = () => {
             ))}
           </div>
           <button
-            onClick={() => setLocationGroups([])}
+            onClick={() => {
+              setLocationGroups([]);
+              clearAreaMarkers();
+            }}
             style={clearButtonStyle}
           >
             ล้างข้อมูล
@@ -302,12 +357,27 @@ const listContainerStyle: React.CSSProperties = {
   border: "1px solid #333",
 };
 
+const resetGlobeButtonStyle: React.CSSProperties = {
+  position: "absolute",
+  bottom: 110,
+  right: 10,
+  zIndex: 15,
+  background: "#FFF",
+  borderRadius: "50%",
+  cursor: "pointer",
+  fontSize: 20,
+  padding: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  boxShadow: "0 2px 10px rgba(0,0,0,0.3)",
+};
+
 const groupHeaderStyle: React.CSSProperties = {
   background: "#222",
   padding: "5px 10px",
   borderRadius: 5,
   fontSize: 11,
-  fontWeight: "bold",
   color: "#00ffff",
   marginBottom: 5,
   borderLeft: "3px solid #00ffff",
@@ -319,7 +389,6 @@ const listItemStyle: React.CSSProperties = {
   fontSize: 12,
   color: "#ccc",
   borderBottom: "1px solid #1a1a1a",
-  transition: "0.2s",
 };
 
 const clearButtonStyle: React.CSSProperties = {
@@ -332,7 +401,6 @@ const clearButtonStyle: React.CSSProperties = {
   borderRadius: 6,
   cursor: "pointer",
   fontSize: 12,
-  fontWeight: "bold",
 };
 
 export default MapGlobeShp;
